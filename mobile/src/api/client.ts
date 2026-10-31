@@ -147,6 +147,38 @@ export function canReview(role: Session['role'] | undefined): boolean {
   return role === 'committee' || role === 'admin' || role === 'auditor';
 }
 
+export interface LiveEvent {
+  id: string;
+  kind: string;
+  detail: string;
+  device_label: string | null;
+  occurred_at: string;
+  alert_id: string | null;
+  severity: AlertSeverity | null;
+  has_photo: boolean;
+}
+
+export interface DeviceStatus {
+  serial: string;
+  label: string;
+  online: boolean;
+  last_seen_at: string | null;
+  door_state: 'open' | 'closed' | null;
+  door_opened_at: string | null;
+}
+
+export type LiveMessage =
+  | { type: 'hello' }
+  | { type: 'event'; event: LiveEvent }
+  | { type: 'status'; device: DeviceStatus }
+  | { type: 'alert_count'; open: number; critical_open: number };
+
+/** WebSocket URL for the live feed. The token rides in the query string
+ *  because a phone WebSocket cannot set an Authorization header. */
+export function liveSocketUrl(): string {
+  return `${BASE_URL.replace(/^http/, 'ws')}/i/${SLUG}/live?token=${encodeURIComponent(TOKEN ?? '')}`;
+}
+
 export type Result<T> =
   | { ok: true; data: T }
   | { ok: false; refusal: RuleVerdict }
@@ -270,6 +302,10 @@ export const api = {
     };
   },
 
+  devices: () => request<DeviceStatus[]>(`/i/${SLUG}/devices`),
+
+  liveEvents: (limit = 40) => request<LiveEvent[]>(`/i/${SLUG}/live/events?limit=${limit}`),
+
   alertSummary: () =>
     request<{ open: number; critical_open: number }>(`/i/${SLUG}/alerts/summary`),
 
@@ -295,6 +331,23 @@ export const api = {
     uri: `${BASE_URL}/i/${SLUG}/alerts/${id}/photo`,
     headers: authHeaders(),
   }),
+
+  /** Fetches the photo with the bearer token and returns it as a data URI.
+   * Android's image loader is unreliable with auth headers, so the app
+   * downloads the bytes itself and hands the picture over from memory. */
+  photoDataUri: async (id: string): Promise<string> => {
+    const res = await fetch(`${BASE_URL}/i/${SLUG}/alerts/${id}/photo`, {
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`photo ${res.status}`);
+    const blob = await res.blob();
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(String(reader.result));
+      reader.onerror = () => reject(new Error('photo read failed'));
+      reader.readAsDataURL(blob);
+    });
+  },
 
   closeCount: (body: {
     device_serial?: string;

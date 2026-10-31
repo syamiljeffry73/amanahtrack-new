@@ -7,9 +7,7 @@
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "plugins": [
-      "expo-router",
-      "expo-status-bar",
-      "expo-font"
+      "expo-router"
     ],
     "android": {
       "package": "my.amanahtrack.app"

@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   RefreshControl,
   ScrollView,
@@ -10,6 +10,7 @@ import {
 import { useFocusEffect, useRouter } from 'expo-router';
 
 import { api, canWrite, Fund } from '../src/api/client';
+import { useLive } from '../src/live';
 import { useSession } from '../src/session';
 import { colors, fonts, radius, ringgit, space } from '../src/theme';
 import { BottomBar } from '../src/ui/BottomBar';
@@ -61,6 +62,7 @@ export default function HomeScreen() {
   const { width } = useWindowDimensions();
   const { session, signOut } = useSession();
   const writable = canWrite(session?.role);
+  const live = useLive();
 
   const [funds, setFunds] = useState<Fund[]>([]);
   const [verification, setVerification] = useState<Verification | null>(null);
@@ -68,6 +70,13 @@ export default function HomeScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // A pushed alert count updates the badge and card without a pull to refresh.
+  useEffect(() => {
+    if (live.openAlerts !== null) {
+      setAlertInfo({ open: live.openAlerts, critical_open: live.criticalOpen });
+    }
+  }, [live.openAlerts, live.criticalOpen]);
 
   const load = useCallback(async () => {
     try {

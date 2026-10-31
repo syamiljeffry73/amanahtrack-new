@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import os
@@ -9,7 +10,16 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
@@ -31,23 +41,31 @@ from app.models import (
     User,
     CountSession,
     Device,
+    DeviceEvent,
     Fund,
     Institution,
     Transaction,
     TxnStatus,
 )
 from app.services import alerts as alert_service
-from app.services import ledger, sealing
+from app.services import ledger, sealing, telemetry
+from app.services.live import hub
 from app.services.ledger import FundRuleViolation, LedgerError
 
 # SQLite by default so a fresh clone runs with no setup. Point
 # AMANAH_DATABASE_URL at Postgres when you are ready; nothing else changes.
 DATABASE_URL = os.getenv("AMANAH_DATABASE_URL", "sqlite:///./amanahtrack.db")
+# Hosts such as Neon hand out plain "postgres://" or "postgresql://" links.
+# Tell SQLAlchemy to use the psycopg 3 driver for them.
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = "postgresql://" + DATABASE_URL[len("postgres://"):]
+if DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = "postgresql+psycopg://" + DATABASE_URL[len("postgresql://"):]
 
 _connect_args = (
     {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 )
-engine = create_engine(DATABASE_URL, connect_args=_connect_args)
+engine = create_engine(DATABASE_URL, connect_args=_connect_args, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False)
 
 
@@ -82,10 +100,31 @@ def any_member(user: User = Depends(current_user)) -> User:
     return user
 
 
+async def _sweeper():
+    """Every 30 seconds: notice boxes that went quiet and doors left open."""
+    while True:
+        await asyncio.sleep(30)
+        try:
+            with SessionLocal() as db:
+                batches = telemetry.sweep(db)
+                db.commit()
+            for inst_id, messages in batches:
+                for m in messages:
+                    await hub.broadcast(inst_id, m)
+        except Exception:  # the sweeper must never die
+            import logging
+
+            logging.getLogger("amanahtrack").exception("sweep failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(engine)
-    yield
+    task = asyncio.create_task(_sweeper())
+    try:
+        yield
+    finally:
+        task.cancel()
 
 
 app = FastAPI(
@@ -149,6 +188,16 @@ class DeviceAlertIn(BaseModel):
     serial: str
     kind: AlertKind
     detail: str = ""
+    photo_b64: str | None = None
+    photo_sha256: str | None = None
+    occurred_at: datetime | None = None
+
+
+class TelemetryIn(BaseModel):
+    serial: str
+    kind: str
+    detail: str = ""
+    pulses: int | None = None
     photo_b64: str | None = None
     photo_sha256: str | None = None
     occurred_at: datetime | None = None
@@ -471,6 +520,66 @@ def ingest_device_event(
     return {"accepted": True, "recorded": True, "reference": txn.reference}
 
 
+@app.post("/devices/telemetry", status_code=202)
+async def ingest_telemetry(
+    body: TelemetryIn,
+    x_device_signature: str = Header(default=""),
+    db: Session = Depends(get_db),
+):
+    """Live sensor events from a box: door, vibration, heartbeat.
+
+    Signed like alerts: HMAC over serial, kind and the SHA-256 of the photo.
+    The box reports what it saw. The server decides what it means.
+    """
+    if body.kind not in telemetry.EVENT_KINDS:
+        raise HTTPException(422, f"Unknown event kind '{body.kind}'")
+    device = db.scalars(select(Device).where(Device.serial == body.serial)).first()
+    if device is None or not device.active:
+        raise HTTPException(404, "Unknown or inactive device")
+
+    expected = alert_service.device_signature(
+        body.serial, body.kind, body.photo_sha256, device.shared_secret
+    )
+    if not hmac.compare_digest(expected, x_device_signature):
+        raise HTTPException(401, "Bad device signature")
+
+    photo = None
+    if body.photo_b64:
+        if not body.photo_sha256:
+            raise HTTPException(422, "photo_sha256 is required with a photo")
+        try:
+            photo = alert_service.decode_photo(body.photo_b64)
+        except alert_service.AlertError as exc:
+            raise HTTPException(422, str(exc))
+
+    try:
+        result = telemetry.handle(
+            db,
+            device,
+            kind=body.kind,
+            detail=body.detail,
+            pulses=body.pulses,
+            photo=photo,
+            photo_sha256=body.photo_sha256,
+            signature=x_device_signature,
+            occurred_at=body.occurred_at,
+        )
+    except alert_service.AlertError as exc:
+        db.rollback()
+        raise HTTPException(422, str(exc))
+    db.commit()
+
+    inst_id = device.institution_id
+    if result["event"] is not None:
+        await hub.broadcast(
+            inst_id, telemetry.event_message(db, result["event"], result["alert"])
+        )
+    if result["alert"] is not None:
+        await hub.broadcast(inst_id, {"type": "alert_count", **alert_service.open_counts(db, inst_id)})
+    await hub.broadcast(inst_id, {"type": "status", "device": telemetry.device_status(device)})
+    return {"accepted": True, "alert_id": result["alert"].id if result["alert"] else None}
+
+
 _ALERT_COPY = {
     AlertKind.UNEXPLAINED_WEIGHT: (
         AlertSeverity.WARNING,
@@ -482,7 +591,7 @@ _ALERT_COPY = {
 
 
 @app.post("/devices/alerts", status_code=201)
-def ingest_device_alert(
+async def ingest_device_alert(
     body: DeviceAlertIn,
     x_device_signature: str = Header(default=""),
     db: Session = Depends(get_db),
@@ -542,7 +651,13 @@ def ingest_device_alert(
         )
 
     device.last_seen_at = datetime.now(timezone.utc)
+    event = telemetry._log(db, device, body.kind.value, alert.detail, alert, alert.occurred_at)
     db.commit()
+    await hub.broadcast(device.institution_id, telemetry.event_message(db, event, alert))
+    await hub.broadcast(
+        device.institution_id,
+        {"type": "alert_count", **alert_service.open_counts(db, device.institution_id)},
+    )
     return {"accepted": True, "alert_id": alert.id, "seq": alert.seq}
 
 
@@ -681,6 +796,76 @@ def _get_alert(db: Session, inst: Institution, alert_id: str) -> Alert:
     if alert is None or alert.institution_id != inst.id:
         raise HTTPException(404, "No such alert")
     return alert
+
+
+@app.get("/i/{slug}/devices")
+def list_devices(
+    slug: str, db: Session = Depends(get_db), user: User = Depends(current_user)
+):
+    inst = get_institution(db, slug)
+    assert_same_institution(user, inst)
+    rows = db.scalars(
+        select(Device).where(Device.institution_id == inst.id, Device.active.is_(True))
+    ).all()
+    return [telemetry.device_status(d) for d in rows]
+
+
+@app.get("/i/{slug}/live/events")
+def recent_events(
+    slug: str,
+    limit: int = 40,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    """Catch-up for the live feed after the app was closed or reconnected."""
+    inst = get_institution(db, slug)
+    assert_same_institution(user, inst)
+    rows = db.scalars(
+        select(DeviceEvent)
+        .where(DeviceEvent.institution_id == inst.id)
+        .order_by(DeviceEvent.created_at.desc())
+        .limit(min(limit, 100))
+    ).all()
+    out = []
+    for ev in rows:
+        alert = db.get(Alert, ev.alert_id) if ev.alert_id else None
+        out.append(telemetry.event_message(db, ev, alert)["event"])
+    return out
+
+
+@app.websocket("/i/{slug}/live")
+async def live_socket(websocket: WebSocket, slug: str, token: str = ""):
+    """Push channel for the app's Live screen.
+
+    Browsers and phones cannot set an Authorization header on a WebSocket, so
+    the token rides in the query string. It is checked before the connection
+    is accepted, and the institution comes from the token, not the URL.
+    """
+    db = SessionLocal()
+    try:
+        try:
+            user = auth.get_current_user(token=token, db=db)
+            inst = get_institution(db, slug)
+            assert_same_institution(user, inst)
+            inst_id = inst.id
+        except HTTPException:
+            await websocket.close(code=4401)
+            return
+    finally:
+        db.close()
+
+    await websocket.accept()
+    hub.add(inst_id, websocket)
+    try:
+        await websocket.send_json({"type": "hello"})
+        while True:
+            # The app sends nothing meaningful; reading keeps the socket honest
+            # and lets us notice when the phone goes away.
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        hub.remove(inst_id, websocket)
 
 
 @app.get("/i/{slug}/alerts/summary")

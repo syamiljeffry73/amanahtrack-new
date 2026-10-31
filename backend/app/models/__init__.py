@@ -89,6 +89,10 @@ class AlertKind(str, Enum):
     COUNT_VARIANCE = "count_variance"
     TAMPER_SUSPECTED = "tamper_suspected"
     CHAIN_BROKEN = "chain_broken"
+    DOOR_OPENED = "door_opened"
+    DOOR_LEFT_OPEN = "door_left_open"
+    VIBRATION = "vibration"
+    DEVICE_OFFLINE = "device_offline"
 
 
 class AlertSeverity(str, Enum):
@@ -182,6 +186,15 @@ class Device(Base):
         DateTime(timezone=True), nullable=True
     )
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Live state, updated by telemetry. door_state is "open", "closed" or None
+    # (never reported). The two flags stop the periodic check from raising the
+    # same alert every 30 seconds.
+    door_state: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    door_opened_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    door_alerted: Mapped[bool] = mapped_column(Boolean, default=False)
+    offline_alerted: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class Transaction(Base):
@@ -337,3 +350,26 @@ class Alert(Base):
         DateTime(timezone=True), nullable=True
     )
     review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class DeviceEvent(Base):
+    """One sensor reading worth showing in the live feed.
+
+    Heartbeats are not stored (they would be 2,880 rows a day per box); they
+    only refresh the device's last_seen_at. Everything else the box reports is
+    kept here, linked to the alert it raised when it raised one.
+    """
+
+    __tablename__ = "device_events"
+    __table_args__ = (Index("ix_device_event_inst_time", "institution_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    institution_id: Mapped[str] = mapped_column(ForeignKey("institutions.id"))
+    device_id: Mapped[str | None] = mapped_column(
+        ForeignKey("devices.id"), nullable=True
+    )
+    kind: Mapped[str] = mapped_column(String(30))
+    detail: Mapped[str] = mapped_column(Text, default="")
+    alert_id: Mapped[str | None] = mapped_column(ForeignKey("alerts.id"), nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

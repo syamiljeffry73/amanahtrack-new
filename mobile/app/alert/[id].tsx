@@ -18,6 +18,7 @@ import { Alert, AlertVerification, api, canReview } from '../../src/api/client';
 import { fullTime } from '../../src/format';
 import { useSession } from '../../src/session';
 import { colors, fonts, radius } from '../../src/theme';
+import { AuthImage } from '../../src/ui/AuthImage';
 import { CheckList, HashBlock } from '../../src/ui/Evidence';
 import { Icon } from '../../src/ui/Icon';
 import { FadeUp, PressScale, Skeleton } from '../../src/ui/motion';
@@ -107,7 +108,6 @@ export default function AlertDetail() {
 
   const sev = SEVERITY[alert.severity];
   const open = alert.status === 'open';
-  const photo = api.photoSource(alert.id);
   const hashState = result
     ? result.photo_sha256 === result.recomputed_sha256
       ? 'ok'
@@ -147,8 +147,8 @@ export default function AlertDetail() {
               ) : (
                 <>
                   <ActivityIndicator style={StyleSheet.absoluteFill} color={colors.green} />
-                  <Image
-                    source={photo}
+                  <AuthImage
+                    alertId={alert.id}
                     style={s.photo}
                     resizeMode="cover"
                     onError={() => setPhotoFailed(true)}
@@ -305,7 +305,7 @@ export default function AlertDetail() {
 
       <Modal visible={zoom} transparent animationType="fade" onRequestClose={() => setZoom(false)}>
         <Pressable style={s.modal} onPress={() => setZoom(false)}>
-          <Image source={photo} style={s.zoomImg} resizeMode="contain" />
+          <AuthImage alertId={alert.id} style={s.zoomImg} resizeMode="contain" />
           <Text style={s.zoomHint}>Tap anywhere to close</Text>
         </Pressable>
       </Modal>

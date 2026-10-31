@@ -15,6 +15,7 @@ import {
   PlusJakartaSans_700Bold,
 } from '@expo-google-fonts/plus-jakarta-sans';
 
+import { LiveProvider } from '../src/live';
 import { SessionProvider, useSession } from '../src/session';
 import { colors, fonts } from '../src/theme';
 import { Splash } from '../src/ui/Splash';
@@ -72,6 +73,7 @@ export default function Layout() {
       <StatusBar style="light" />
       <SessionProvider>
         <Guard>
+          <LiveProvider>
           <Stack
             screenOptions={{
               animation: 'slide_from_right',
@@ -90,10 +92,12 @@ export default function Layout() {
             />
             <Stack.Screen name="count" options={{ title: 'Box count' }} />
             <Stack.Screen name="ledger" options={{ title: 'Ledger' }} />
+            <Stack.Screen name="live" options={{ title: 'Live' }} />
             <Stack.Screen name="alerts" options={{ title: 'Alerts' }} />
             <Stack.Screen name="alert/[id]" options={{ title: 'Review alert' }} />
             <Stack.Screen name="proof/[reference]" options={{ title: 'Entry proof' }} />
           </Stack>
+          </LiveProvider>
         </Guard>
       </SessionProvider>
       {!splashDone && <Splash onDone={finishSplash} />}

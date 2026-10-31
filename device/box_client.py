@@ -237,6 +237,18 @@ def post_event(event: dict) -> str:
             "photo_sha256": event.get("photo_sha256"),
         }
         signature = sign_alert(SERIAL, event["kind"], event.get("photo_sha256"), SECRET)
+    elif event["event_type"] == "telemetry":
+        url = f"{API_URL}/devices/telemetry"
+        body = {
+            "serial": SERIAL,
+            "kind": event["kind"],
+            "detail": event.get("detail", ""),
+            "pulses": event.get("pulses"),
+            "photo_b64": event.get("photo_b64"),
+            "photo_sha256": event.get("photo_sha256"),
+            "occurred_at": event.get("occurred_at"),
+        }
+        signature = sign_alert(SERIAL, event["kind"], event.get("photo_sha256"), SECRET)
     else:
         amount = event.get("estimated_amount")
         url = f"{API_URL}/devices/events"
@@ -288,11 +300,13 @@ def flush_queue() -> int:
     return len(kept)
 
 
-def deliver(event: dict) -> None:
+def deliver(event: dict) -> bool:
+    """Send an event, or queue it. Returns True if the server took it now."""
     if flush_queue() == 0 and post_event(event) in (PostResult.OK, PostResult.REJECTED):
-        return
+        return True
     queue_event(event)
     print("  offline, saved to queue")
+    return False
 
 
 # ------------------------------------------------------------------ the scales

@@ -12,7 +12,7 @@ type Tab = { key: string; label: string; icon: IconName; href: string; write?: b
 const TABS: Tab[] = [
   { key: 'home', label: 'Home', icon: 'home', href: '/' },
   { key: 'spend', label: 'Spend', icon: 'spend', href: '/spend', write: true },
-  { key: 'count', label: 'Count', icon: 'count', href: '/count', write: true },
+  { key: 'live', label: 'Live', icon: 'pulse', href: '/live' },
   { key: 'alerts', label: 'Alerts', icon: 'bell', href: '/alerts' },
   { key: 'ledger', label: 'Ledger', icon: 'ledger', href: '/ledger' },
 ];
