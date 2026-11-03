@@ -23,7 +23,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core import auth
@@ -43,12 +43,14 @@ from app.models import (
     Device,
     DeviceEvent,
     Fund,
+    PushToken,
     Institution,
     Transaction,
     TxnStatus,
 )
 from app.services import alerts as alert_service
 from app.services import ledger, sealing, telemetry
+from app.services import push as push_service
 from app.services.live import hub
 from app.services.ledger import FundRuleViolation, LedgerError
 
@@ -67,6 +69,7 @@ _connect_args = (
 )
 engine = create_engine(DATABASE_URL, connect_args=_connect_args, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False)
+hub.listeners.append(push_service.make_listener(lambda: SessionLocal()))
 
 
 def get_db():
@@ -659,6 +662,52 @@ async def ingest_device_alert(
         {"type": "alert_count", **alert_service.open_counts(db, device.institution_id)},
     )
     return {"accepted": True, "alert_id": alert.id, "seq": alert.seq}
+
+
+class PushTokenIn(BaseModel):
+    token: str = Field(min_length=10, max_length=200)
+    platform: str = Field(default="android", max_length=20)
+
+
+@app.post("/i/{slug}/push-token", status_code=204)
+def register_push_token(
+    slug: str,
+    body: PushTokenIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(any_member),
+):
+    """Remember this phone so the box's alerts can reach it when the app is closed."""
+    inst = get_institution(db, slug)
+    assert_same_institution(user, inst)
+    row = db.scalars(select(PushToken).where(PushToken.token == body.token)).first()
+    if row is None:
+        db.add(
+            PushToken(
+                user_id=user.id,
+                institution_id=inst.id,
+                token=body.token,
+                platform=body.platform,
+            )
+        )
+    else:  # same phone, maybe a different person signed in
+        row.user_id, row.institution_id, row.platform = user.id, inst.id, body.platform
+    db.commit()
+
+
+@app.delete("/i/{slug}/push-token", status_code=204)
+def remove_push_token(
+    slug: str,
+    token: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(any_member),
+):
+    """Called on sign out so a shared phone stops receiving this person's alerts."""
+    inst = get_institution(db, slug)
+    assert_same_institution(user, inst)
+    db.execute(
+        delete(PushToken).where(PushToken.token == token, PushToken.user_id == user.id)
+    )
+    db.commit()
 
 
 @app.post("/i/{slug}/counts", status_code=201)

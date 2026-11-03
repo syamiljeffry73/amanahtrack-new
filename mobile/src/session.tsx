@@ -8,6 +8,7 @@ import {
 } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+import { unregisterPush } from './push';
 import { login as apiLogin, onSessionExpired, setSession, Session } from './api/client';
 
 /**
@@ -56,6 +57,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signOut = useCallback(async () => {
+    await unregisterPush(); // needs the token, so before the session is cleared
     setSession(null);
     setSessionState(null);
     await AsyncStorage.removeItem(STORE_KEY).catch(() => {});

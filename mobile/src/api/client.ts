@@ -304,6 +304,18 @@ export const api = {
 
   devices: () => request<DeviceStatus[]>(`/i/${SLUG}/devices`),
 
+  registerPushToken: (token: string) =>
+    fetch(`${BASE_URL}/i/${SLUG}/push-token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ token, platform: 'android' }),
+    }),
+  removePushToken: (token: string) =>
+    fetch(`${BASE_URL}/i/${SLUG}/push-token?token=${encodeURIComponent(token)}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    }),
+
   liveEvents: (limit = 40) => request<LiveEvent[]>(`/i/${SLUG}/live/events?limit=${limit}`),
 
   alertSummary: () =>

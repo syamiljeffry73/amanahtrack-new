@@ -7,3 +7,5 @@ queue.jsonl
 box.env
 .env
 .env.local
+google-services.json
+*firebase-adminsdk*.json

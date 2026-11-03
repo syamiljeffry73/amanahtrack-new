@@ -26,6 +26,9 @@ log = logging.getLogger("amanahtrack.live")
 class Hub:
     def __init__(self) -> None:
         self._sockets: dict[str, set[WebSocket]] = defaultdict(set)
+        # Called (in the background) after every broadcast. Push notifications
+        # hook in here so every place that raises an alert is covered.
+        self.listeners: list = []
 
     def add(self, institution_id: str, ws: WebSocket) -> None:
         self._sockets[institution_id].add(ws)
@@ -39,6 +42,8 @@ class Hub:
         return len(self._sockets.get(institution_id, ()))
 
     async def broadcast(self, institution_id: str, message: dict) -> None:
+        for listener in self.listeners:
+            asyncio.create_task(self._run_listener(listener, institution_id, message))
         dead = []
         for ws in list(self._sockets.get(institution_id, ())):
             try:
@@ -48,6 +53,14 @@ class Hub:
         for ws in dead:
             self.remove(institution_id, ws)
             log.info("dropped a dead live socket")
+
+
+    @staticmethod
+    async def _run_listener(listener, institution_id: str, message: dict) -> None:
+        try:
+            await listener(institution_id, message)
+        except Exception:  # a failing side effect must never break the live feed
+            log.exception("live listener failed")
 
 
 hub = Hub()

@@ -18,6 +18,7 @@ import {
 import { LiveProvider } from '../src/live';
 import { SessionProvider, useSession } from '../src/session';
 import { colors, fonts } from '../src/theme';
+import { PushSetup } from '../src/ui/PushSetup';
 import { Splash } from '../src/ui/Splash';
 
 /**
@@ -97,6 +98,7 @@ export default function Layout() {
             <Stack.Screen name="alert/[id]" options={{ title: 'Review alert' }} />
             <Stack.Screen name="proof/[reference]" options={{ title: 'Entry proof' }} />
           </Stack>
+          <PushSetup />
           </LiveProvider>
         </Guard>
       </SessionProvider>

@@ -135,6 +135,24 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class PushToken(Base):
+    """A phone that wants push notifications for one user.
+
+    The token comes from Expo's push service. One user can have several phones,
+    and the same phone token is unique, so signing in as someone else on the
+    same phone moves the token to the new user.
+    """
+
+    __tablename__ = "push_tokens"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    institution_id: Mapped[str] = mapped_column(ForeignKey("institutions.id"))
+    token: Mapped[str] = mapped_column(String(200), unique=True)
+    platform: Mapped[str] = mapped_column(String(20), default="android")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 class Fund(Base):
     """An instance of a fund category held by one institution.
 
